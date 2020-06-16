@@ -18,7 +18,7 @@
 #include <usb.h>
 
 unsigned int   debug   = 0;
-unsigned long  dl_addr = 0x30000000L;
+unsigned long  dl_addr = 0xfffffffeL;
 unsigned long  dl_size = 0L;
 unsigned char *dl_data = NULL;
 
@@ -62,6 +62,7 @@ unsigned char *load_file(const char *fname, unsigned long *size,
 		perror("malloc");
 		goto err;
 	}
+	memset(blk, 0, *size);
 
 	fd = open(fname, O_RDONLY);
 	if (fd < 0) {
@@ -89,7 +90,7 @@ void calc_cksum(unsigned char *data, ssize_t len)
 	unsigned int cksum = 0;
 	unsigned char *cp = (data + len);
 
-	len -= 8;
+	len -= 10;
 	cp -= 2;
 
 	data += 8;
@@ -120,7 +121,7 @@ int verify_device(struct usb_device *dev)
 	DBG(("\t=> idVendor %x\n", dev->descriptor.idVendor));
 	DBG(("\t=> idProduct %x\n", dev->descriptor.idProduct));
 
-	if (dev->descriptor.idVendor == 0x5345 &&
+	if (dev->descriptor.idVendor == 0x04e8 &&
 	    dev->descriptor.idProduct == 0x1234)
 		return 1;
 
@@ -170,6 +171,7 @@ struct option long_opts[] =  {
 };
 
 int flg_show = 0;
+#define TRY(expr) do { int rc = (expr); if (rc) { printf("FAILED '%s'\n", #expr);} } while (0)
 
 int main(int argc, char **argv)
 {
@@ -295,31 +297,59 @@ int main(int argc, char **argv)
 		perror("usb_open");
 		return 1;
 	}
-
-	DBG(("claim interface\n"));
-
 	if (usb_claim_interface(devh, 0) < 0) {
 		perror("usb_claim_interface");
 		usb_close(devh);
 		return 1;
 	}
-
-	printf("=> Downloading %ld bytes to 0x%08lx\n", dl_size, dl_addr);
-
-	write_header(dl_data, dl_addr, dl_size);
-	calc_cksum(dl_data, dl_size);
-
-	ret = usb_bulk_write(devh, 3, (void *)dl_data, dl_size, 5*1000*1000);
-	printf("=> usb_bulk_write() returned %d\n", ret);
-
-	if (ret != dl_size) {
-		printf("failed to write %ld bytes\n", dl_size);
+	if (usb_set_configuration(devh, 1) < 0) {
+		perror("usb_set_configuration");
+		usb_close(devh);
+		return 1;
 	}
 
+	char *files[] = {
+		"part1.bin",
+		"part2.bin",
+		"part3.bin",
+		"part1.bin",
+		"part4.bin",
+		"part5.bin",
+		"part6.bin",
+	};
 	free(dl_data);
-	
+	dl_data = NULL;
+
+	int i;
+	for (i = 0; i < sizeof(files)/sizeof(files[0]); i++)
+	{
+		dl_file = files[i];
+		printf("Downloading file %s\n", dl_file);
+
+		DBG(("claim interface\n"));
+		dl_data = load_file(dl_file, &dl_size, &fsize);
+		if (dl_data == NULL) {
+			printf("failed to load %s\n", dl_file);
+			return 1;
+		}
+		printf("=> Downloading %ld bytes to 0x%08lx\n", dl_size, dl_addr);
+		write_header(dl_data, dl_addr, dl_size);
+		calc_cksum(dl_data, dl_size);
+
+		ret = usb_bulk_write(devh, 2, (void *)dl_data, dl_size, 50*1000*1000);
+		printf("=> usb_bulk_write() returned %d\n", ret);
+
+		if (ret != dl_size) {
+			printf("failed to write %ld bytes\n", dl_size);
+			exit(-1);
+		}
+
+		free(dl_data);
+		dl_data = NULL;
+	}
+
 	usb_release_interface(devh, 0);
 	usb_close(devh);
-
+	devh = NULL;
 	return 0;
 }
